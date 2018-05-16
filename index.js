@@ -117,8 +117,8 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
   const userAfter = user.data.val();
   
   if (userBefore.nick !== userAfter.nick || userBefore.picUrl !== userAfter.picUrl) {
+    
     const chatRoomPromise = admin.database().ref('/chat/room').once('value').then(roomList => {
-      const roomUpdatePromises = [];
       const rooms = [];
       roomList.forEach(oneRoom => {
         const room = oneRoom.val(); 
@@ -135,17 +135,46 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
         if (filteredMessageIds.length > 0) {
           filteredMessageIds.map(filteredMessageId => {
             if (userBefore.nick !== userAfter.nick) {
-               roomUpdatePromises.push(admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userName: userAfter.nick}));
+              admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userName: userAfter.nick});
             }
             if (userBefore.picUrl !== userAfter.picUrl) {
-              roomUpdatePromises.push(admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userPicUrl: userAfter.picUrl}));
+              admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userPicUrl: userAfter.picUrl});
             }
           });
         }
       });
-      return Promise.all(roomUpdatePromises);
     });
-    return Promise.all([chatRoomPromise]).then(() => {
+
+    const chatPrivateRoomPromise = admin.database().ref('/chat/chat_list').once('value').then(privateRooms => {
+      const filteredPrivateRooms = [];
+      privateRooms.forEach(privateRoom => {
+        room = privateRoom.val();
+        room.key = privateRoom.key;
+        if (room.key.indexOf(userId) > -1) {
+          filteredPrivateRooms.push(room);
+        }
+      });
+      filteredPrivateRooms.map(room => {
+        const messageIds = Object.keys(room);
+        const filteredMessageIds = messageIds.filter(messageId => {
+          if (room[messageId].userId === userId) {
+            return true;
+          }
+        });
+        if (filteredMessageIds.length > 0) {
+          filteredMessageIds.map(filteredMessageId => {
+            if (userBefore.nick !== userAfter.nick) {
+               admin.database().ref(`chat/chat_list/${room.key}/${filteredMessageId}`).update({userName: userAfter.nick});
+            }
+            if (userBefore.picUrl !== userAfter.picUrl) {
+              admin.database().ref(`chat/chat_list/${room.key}/${filteredMessageId}`).update({userPicUrl: userAfter.picUrl});
+            }
+          });
+        }
+      });
+    });
+        
+    return Promise.all([chatRoomPromise, chatPrivateRoomPromise]).then(() => {
       console.log('all updates done!');
     }).catch(reason => {
       console.log(reason);
