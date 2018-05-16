@@ -164,7 +164,7 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
         if (filteredMessageIds.length > 0) {
           filteredMessageIds.map(filteredMessageId => {
             if (userBefore.nick !== userAfter.nick) {
-               admin.database().ref(`chat/chat_list/${room.key}/${filteredMessageId}`).update({userName: userAfter.nick});
+              admin.database().ref(`chat/chat_list/${room.key}/${filteredMessageId}`).update({userName: userAfter.nick});
             }
             if (userBefore.picUrl !== userAfter.picUrl) {
               admin.database().ref(`chat/chat_list/${room.key}/${filteredMessageId}`).update({userPicUrl: userAfter.picUrl});
@@ -173,8 +173,26 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
         }
       });
     });
+
+    const chatFriendListPromise = admin.database().ref(`/chat_friend_list/${userId}`).once('value').then(snapshot => {
+      const friendsToUpdate = [];
+      snapshot.forEach(childSnapshot => {
+        const friendToUpdate = childSnapshot.key; 
+        friendsToUpdate.push(friendToUpdate);
+      });
+      return friendsToUpdate;
+    }).then(friendsToUpdate => {
+      friendsToUpdate.map(friend => {
+        if (userBefore.nick !== userAfter.nick) {
+          admin.database().ref(`/chat_friend_list/${friend}/${userId}`).update({nick: userAfter.nick});
+        }
+        if (userBefore.picUrl !== userAfter.picUrl) {
+          admin.database().ref(`/chat_friend_list/${friend}/${userId}`).update({picUrl: userAfter.picUrl});
+        }
+      });
+    });
         
-    return Promise.all([chatRoomPromise, chatPrivateRoomPromise]).then(() => {
+    return Promise.all([chatRoomPromise, chatPrivateRoomPromise, chatFriendListPromise]).then(() => {
       console.log('all updates done!');
     }).catch(reason => {
       console.log(reason);
@@ -200,11 +218,9 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
     return items;
   }).then(items => {
     filteredItems = items.filter(item => item.creatorId === user.id);
-    const itemCreatorIdPromises = [];
     filteredItems.map(filteredItem => {
-      itemCreatorIdPromises.push(admin.database().ref(`/items/${filteredItem.key}`).remove())
+      admin.database().ref(`/items/${filteredItem.key}`).remove();
     });
-    return Promise.all(itemCreatorIdPromises);
   });
 
   const eventsPromise = admin.database().ref('/events').once('value').then(snapshot => {
@@ -215,18 +231,14 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
     });
   }).then(() => {
     filteredEvents = events.filter(event => event.hasOwnProperty('guestsIds') && event.guestsIds.hasOwnProperty(user.id));
-    const eventGuestIdPromises = [];
     filteredEvents.map(filteredEvent => {
-      eventGuestIdPromises.push(admin.database().ref(`/events/${filteredEvent.key}/guestsIds/${user.id}`).remove());
+      admin.database().ref(`/events/${filteredEvent.key}/guestsIds/${user.id}`).remove();
     });
-    return Promise.all(eventGuestIdPromises);
   }).then(() => {
     filteredEvents = events.filter(event => event.creatorId === user.id);
-    const eventCreatorIdPromises = [];
     filteredEvents.map(filteredEvent => {
-      eventCreatorIdPromises.push(admin.database().ref(`/events/${filteredEvent.key}`).remove());
+      admin.database().ref(`/events/${filteredEvent.key}`).remove();
     });
-    return  Promise.all(eventCreatorIdPromises);
   });
 
   const chatFriendListPromise = admin.database().ref(`/chat_friend_list/${user.id}`).once('value').then(snapshot => {
@@ -237,12 +249,9 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
     });
     return friendsToUpdate;
   }).then(friendsToUpdate => {
-    const friendsToUpdatePromises = [];
     friendsToUpdate.map(friend => {
-      friendsToUpdatePromises.push(admin.database().ref(`/chat_friend_list/${friend}/${user.id}`)
-      .remove());
+      admin.database().ref(`/chat_friend_list/${friend}/${user.id}`).remove();
     });
-    return Promise.all(friendsToUpdatePromises);
   }).then(() => admin.database().ref(`/chat_friend_list/${user.id}`).remove());
 
   const chatListPromise = admin.database().ref(`chat/chat_list`).once('value').then(snapshot => {
@@ -252,11 +261,9 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
       chatListItems.push(chatListItem);
     });
     filteredItems = chatListItems.filter(chatListItem => chatListItem.indexOf(user.id) > -1);
-    const chatListDeletePromises = [];
     filteredItems.map(filteredItem => {
-      chatListDeletePromises.push(admin.database().ref(`/chat/chat_list/${filteredItem}`).remove());
+      admin.database().ref(`/chat/chat_list/${filteredItem}`).remove();
     });
-    return Promise.all(chatListDeletePromises);
   })
 
   return Promise.all([eventsPromise, itemsPromise, chatFriendListPromise, chatListPromise]).then(() => {
