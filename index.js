@@ -119,12 +119,9 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
   if (userBefore.nick !== userAfter.nick || userBefore.picUrl !== userAfter.picUrl) {
     
     const chatRoomPromise = admin.database().ref('/chat/room').once('value').then(roomList => {
-      const rooms = [];
-      roomList.forEach(oneRoom => {
-        const room = oneRoom.val(); 
-        room.key = oneRoom.key;
-        rooms.push(room);
-      });
+      
+      const rooms = convertToArray(roomList);
+
       rooms.map(room => {
         const messageIds = Object.keys(room);
         const filteredMessageIds = messageIds.filter(messageId => {
@@ -201,20 +198,15 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
     console.log('nothing to update.');
     return 'ok'
   }
-})
+});
 
 exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(snapshot => {
   /************************************************************************************/
   const user = snapshot.data.previous.val();
-  const events = [];
+  let events = [];
   
   const itemsPromise = admin.database().ref('/items').once('value').then(snapshot => {
-    let items = [];
-    snapshot.forEach(childSnapshot => {
-      let item = childSnapshot.val(); 
-      item.key = childSnapshot.key;
-      items.push(item);
-    });
+    const items = convertToArray(snapshot);
     return items;
   }).then(items => {
     filteredItems = items.filter(item => item.creatorId === user.id);
@@ -224,11 +216,7 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
   });
 
   const eventsPromise = admin.database().ref('/events').once('value').then(snapshot => {
-    snapshot.forEach(childSnapshot => {
-      const event = childSnapshot.val(); 
-      event.key = childSnapshot.key;
-      events.push(event);
-    });
+    events = convertToArray(snapshot);
   }).then(() => {
     filteredEvents = events.filter(event => event.hasOwnProperty('guestsIds') && event.guestsIds.hasOwnProperty(user.id));
     filteredEvents.map(filteredEvent => {
@@ -264,14 +252,34 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
     filteredItems.map(filteredItem => {
       admin.database().ref(`/chat/chat_list/${filteredItem}`).remove();
     });
-  })
+  });  
+  
+  const chatRoomPromise = admin.database().ref('/chat/room').once('value').then(roomList => {
+    const rooms = convertToArray(roomList);
+    rooms.map(room => {
+      const messageIds = Object.keys(room);
+      const filteredMessageIds = messageIds.filter(messageId => {
+        if (room[messageId].userId === user.id) {
+          return true;
+        }
+      });
+      if (filteredMessageIds.length > 0) {
+        filteredMessageIds.map(filteredMessageId => {
+            admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userName: 'Törölt'});
+            admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userPicUrl: '../assets/vector/deletedUser.svg'})
+        });
+      }
+    });
+  });
 
-  return Promise.all([eventsPromise, itemsPromise, chatFriendListPromise, chatListPromise]).then(() => {
+  return Promise.all([eventsPromise, itemsPromise, chatFriendListPromise, chatListPromise, chatRoomPromise]).then(() => {
     console.log('all deletes done!');
   }).catch(reason => {
     console.log(reason);
   });
 });
+
+
 
 function getDataAndSendMail(whereFrom, createEvent) {
   const element = createEvent.data.val(); 
@@ -326,4 +334,14 @@ function getDataAndSendMail(whereFrom, createEvent) {
       reason => console.log(reason)
     );
   });
+}
+
+function convertToArray(object) {
+  const elements = [];
+  object.forEach(oneElement => {
+    const element = oneElement.val(); 
+    element.key = oneElement.key;
+    elements.push(element);
+  });
+  return elements;
 }
