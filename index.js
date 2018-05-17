@@ -15,12 +15,7 @@ const mailTransport = nodemailer.createTransport({
 
 exports.archiveDB = functions.https.onRequest((req, res) => {
   admin.database().ref('/events').once('value').then(snapshot => {
-    let events = [];
-    snapshot.forEach(childSnapshot => {
-      let event = childSnapshot.val(); 
-      event.key = childSnapshot.key;
-      events.push(event);
-    });
+    const events = convertToArray(snapshot);
 
     filteredEvents = events.filter(event => event.date < Date.now() / 1000);
 
@@ -279,7 +274,20 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
   });
 });
 
+exports.itemDeleted = deleteChatRoomOnDeleteEventOrItem('event');
 
+exports.eventDeleted = deleteChatRoomOnDeleteEventOrItem('event');
+
+function deleteChatRoomOnDeleteEventOrItem(eventOrItem) {
+  return functions.database.ref(`/${eventOrItem}s/{id}/`).onDelete(snapshot => {
+    const id = snapshot.data.previous.key;
+    return admin.database().ref(`/chat/room/${id}`).remove().then(() => {
+      console.log(`${eventOrItem}ChatRoom deleted`);
+    }).catch(reason => {
+      console.log(reason);
+    });
+  });
+}
 
 function getDataAndSendMail(whereFrom, createEvent) {
   const element = createEvent.data.val(); 
