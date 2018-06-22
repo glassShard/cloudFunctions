@@ -1,8 +1,9 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 admin.initializeApp(functions.config().firebase);
-const APP_NAME = 'Túrázzunk!';
+const APP_NAME = 'turazzunk.hu';
 const nodemailer = require('nodemailer');
+const request = require('request');
 const gmailEmail = functions.config().gmail.email;
 const gmailPassword = functions.config().gmail.password;
 const mailTransport = nodemailer.createTransport({
@@ -30,8 +31,29 @@ exports.archiveDB = functions.https.onRequest((req, res) => {
   });  
 })
 
+exports.getUserEmail = functions.https.onRequest((req, res) => {
+  const ids = req.query.ids.split(",");
+  const emails = [];
+  const promises = [];
+  ids.map(id => {
+    promises.push(admin.auth().getUser(id));
+  });
+  Promise.all(promises).then(values => {
+    values.map(value => {
+      emails.push(value.email);
+    });
+    console.log(emails);
+    res.send(emails);
+  }).catch(error => {
+    res.send(error);
+    console.log(error);
+  })
+})
+
 exports.sendNewMessageEmail = functions.https.onRequest((req, res) => {
   
+  let modifiedRelations;
+
   Promise.all([
     admin.database().ref('/chat_friend_list').once('value'),
     admin.database().ref(`/users`).once('value')
@@ -55,28 +77,37 @@ exports.sendNewMessageEmail = functions.https.onRequest((req, res) => {
       users.push(user);
     });
 
-    const modifiedRelations = relations.filter(elem => elem.sendEmail && elem.newMessage).map(relation => {
+    modifiedRelations = relations.filter(elem => elem.sendEmail && elem.newMessage).map(relation => {
       const toUser = users.filter(user => user.val().id === relation.user);
       if (toUser.length > 0) {
-        relation.userEmail = toUser[0].val().email;
         relation.userNick = toUser[0].val().nick;
+        relation.userId = toUser[0].key;
       } else {
         relation = null;
       }
       return relation;
     });
 
-    return modifiedRelations;
-  }).then(modifiedRelations => {
+    const promises = [];
+    modifiedRelations.map(modifiedRelation => {
+      promises.push(admin.auth().getUser(modifiedRelation.userId));
+    });
+
+    return Promise.all(promises);
+  }).then(values => {
+    const mailParams = modifiedRelations.map(function(modifiedRelation, index) {
+      modifiedRelation.userEmail = values[index].email;
+      return modifiedRelation;
+    }, values);
     
     const mailOptions = {
       from: `${APP_NAME} <noreply@turazzunk.hu>`
     };
     
-    const emails = modifiedRelations.map(relation => {
+    const emails = mailParams.map(relation => {
       mailOptions.to = relation.userEmail;
       mailOptions.subject = `${relation.nick} új üzenetet írt neked a ${APP_NAME}-on!`
-      mailOptions.html = `<h4>Szia ${relation.userNick || ''}!</h4> <p><strong>${relation.nick}</strong> új üzenetet küldött. Az üzenetet az oldalon, bejelentkezés után tudod megnézni. Az oldalra innen tudsz átugrani:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="localhost:4200">Tovább az oldalra...</a><p>${APP_NAME} mert túrázni jó!</p>`;
+      mailOptions.html = `<h4>Szia ${relation.userNick || ''}!</h4> <p><strong>${relation.nick}</strong> új üzenetet küldött. Az üzenetet az oldalon, bejelentkezés után tudod megnézni. Az oldalra innen tudsz átugrani:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="https://turazzunk.hu">Tovább az oldalra...</a><p>${APP_NAME} mert túrázni jó!</p>`;
       
       return mailTransport.sendMail(mailOptions);
     });
@@ -195,7 +226,7 @@ exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user
   }
 });
 
-exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(snapshot => {
+exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(snapshot => { 
   /************************************************************************************/
   const user = snapshot.data.previous.val();
   let events = [];
@@ -260,14 +291,25 @@ exports.userProfileDeleted = functions.database.ref('/users/{id}/').onDelete(sna
       });
       if (filteredMessageIds.length > 0) {
         filteredMessageIds.map(filteredMessageId => {
-            admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userName: 'Törölt'});
-            admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userPicUrl: '../assets/vector/deletedUser.svg'})
+          admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userName: 'Törölt'});
+          admin.database().ref(`chat/room/${room.key}/${filteredMessageId}`).update({userPicUrl: '../assets/vector/deletedUser.svg'})
         });
       }
     });
   });
 
-  return Promise.all([eventsPromise, itemsPromise, chatFriendListPromise, chatListPromise, chatRoomPromise]).then(() => {
+  const categoriesPromises = [];
+  favEvents = user.favEvents ? Object.keys(user.favEvents) : [];
+  favItems = user.favItems ? Object.keys(user.favItems) : [];
+  
+  favEvents.map(favEvent => {
+    categoriesPromises.push(admin.database().ref(`/categories/EventsCategories/${favEvent}/${user.id}`).remove());
+  });
+  favItems.map(favItem => {
+    categoriesPromises.push(admin.database().ref(`/categories/ItemsCategories/${favItem}/${user.id}`).remove());
+  });
+
+  return Promise.all([eventsPromise, itemsPromise, chatFriendListPromise, chatListPromise, chatRoomPromise, Promise.all(categoriesPromises)]).then(() => {
     console.log('all deletes done!');
   }).catch(reason => {
     console.log(reason);
@@ -296,6 +338,7 @@ function getDataAndSendMail(whereFrom, createEvent) {
   const elementTitle = element.title;
   const elementDir = whereFrom === 'Items' ? 'cuccok' : 'turak';
   const elementWhat = whereFrom === 'Items' ? 'cucc' : 'túra';
+  let filteredUsers = [];
 
   const getUsersMailTo = admin.database().ref(`/categories/${whereFrom}Categories/${category}`).once('value');
 
@@ -316,14 +359,28 @@ function getDataAndSendMail(whereFrom, createEvent) {
     });
     
     filteredUsers = users.filter(user => userIds.indexOf(user.id) > -1);
-    mappedUsers = filteredUsers.map(user => {
-      return {
-        userEmail: user.email,
-        userName: user.nick 
-      }
+    const promises = [];
+    
+    filteredUsers.map(user => {
+      promises.push(admin.auth().getUser(user.id));
     });
+  
+    return Promise.all(promises);
+  
+  }).then(values => {
+    let mappedUsers = [];
+    
+    emails = values.map(value => value.email);
+    names = filteredUsers.map(user => user.nick);
+    
+    mappedUsers = emails.map(function(email, index) {
+      return {
+        userEmail: email,
+        userName: names[index]
+      }
+    }, names);
+    
     return mappedUsers;
-
   }).then(mappedUsers => {
     const mailOptions = {
       from: `${APP_NAME} <noreply@turazzunk.hu>`,
@@ -332,7 +389,7 @@ function getDataAndSendMail(whereFrom, createEvent) {
     
     const emails = mappedUsers.map(user => {
       mailOptions.to = user.userEmail;
-      mailOptions.html = `<h4>Szia ${user.userName || ''}!</h4> <p>Az oldalra új ${elementWhat} került fel a <strong>${category}</strong> kategóriába <strong>"${elementTitle}"</strong> néven. Nézd meg a részleteket itt:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="localhost:4200/${elementDir}/view/${elementId}">Tovább a(z) "${elementTitle}" részleteihez...</a><p>${APP_NAME} mert túrázni jó!</p>`;
+      mailOptions.html = `<h4>Szia ${user.userName || ''}!</h4> <p>Az oldalra új ${elementWhat} került fel a <strong>${category}</strong> kategóriába <strong>"${elementTitle}"</strong> néven. Nézd meg a részleteket itt:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="https://turazzunk.hu/${elementDir}/view/${elementId}">Tovább a(z) "${elementTitle}" részleteihez...</a><p>${APP_NAME} mert túrázni jó!</p>`;
       
       return mailTransport.sendMail(mailOptions);
     });
@@ -353,3 +410,26 @@ function convertToArray(object) {
   });
   return elements;
 }
+
+exports.sendMail = functions.https.onRequest((req, res) => {
+  const mail = [];
+  mail.push({"mailTo": "info@uvegszilank.hu", "nickTo": "Eva2", });
+  const resp = {};
+  resp.mail = mail;
+  resp.text = 'text';
+  resp.subject = "Ez itt egy tárgy mező";
+  request(
+    { method: 'POST', 
+      uri: "https://turazzunk.hu/sendMailFromCloud.php",
+      body: resp, 
+      json: true
+    },
+    (error, response, body) => {
+      if(response.statusCode == 200){
+        console.log(response.body);
+        console.log(response);
+        res.send(body);
+      }
+    }
+  )
+});
