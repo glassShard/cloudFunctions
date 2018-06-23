@@ -3,7 +3,7 @@ const admin = require('firebase-admin');
 admin.initializeApp(functions.config().firebase);
 const APP_NAME = 'turazzunk.hu';
 const nodemailer = require('nodemailer');
-const request = require('request');
+const request = require('request-promise');
 const gmailEmail = functions.config().gmail.email;
 const gmailPassword = functions.config().gmail.password;
 const mailTransport = nodemailer.createTransport({
@@ -50,7 +50,7 @@ exports.getUserEmail = functions.https.onRequest((req, res) => {
   })
 })
 
-exports.sendNewMessageEmail = functions.https.onRequest((req, res) => {
+exports.sendNewMessageEmail = functions.https.onRequest((req, res) => { 
   
   let modifiedRelations;
 
@@ -101,39 +101,52 @@ exports.sendNewMessageEmail = functions.https.onRequest((req, res) => {
     }, values);
     
     const mailOptions = {
-      from: `${APP_NAME} <noreply@turazzunk.hu>`
-    };
+      subject: `%{nickFrom}% új üzenetet írt neked a ${APP_NAME}-on!`,
+      html: `<h4>Szia %{nickTo}%!</h4> <p><strong>%{nickFrom}%</strong> új üzenetet küldött. Az üzenetet az oldalon, bejelentkezés után tudod megnézni. Az oldalra innen tudsz átugrani:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="https://turazzunk.hu">Tovább az oldalra...</a><p>Üdv: ${APP_NAME} </p>`,
+      mailList: []
+    }
+    mailParams.map(user => {
+      mailOptions.mailList.push({mailTo: user.userEmail, nickTo: user.userNick, nickFrom: user.nick});
+    });
     
-    const emails = mailParams.map(relation => {
-      mailOptions.to = relation.userEmail;
-      mailOptions.subject = `${relation.nick} új üzenetet írt neked a ${APP_NAME}-on!`
-      mailOptions.html = `<h4>Szia ${relation.userNick || ''}!</h4> <p><strong>${relation.nick}</strong> új üzenetet küldött. Az üzenetet az oldalon, bejelentkezés után tudod megnézni. Az oldalra innen tudsz átugrani:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="https://turazzunk.hu">Tovább az oldalra...</a><p>${APP_NAME} mert túrázni jó!</p>`;
-      
-      return mailTransport.sendMail(mailOptions);
-    });
-
-    return Promise.all(emails)
-    .then(values => {
-      console.log(values);
-      const modifySendEmail = [];
-      modifiedRelations.map(relation => {
+    return request(
+      { method: 'POST', 
+        uri: "https://turazzunk.hu/sendMailFromCloud.php",
+        body: mailOptions, 
+        json: true
+      }
+    );
+  }).then(body => {
+    console.log(body);
+    const modifySendEmail = [];
+    const sentEmails = body.success ? body.success.split(', ') : [];
+    if (sentEmails.length > 0) {
+      modifiedRelations.filter(relation => sentEmails.indexOf(relation.userEmail) > -1).map(relation => {
         modifySendEmail.push(admin.database().ref(`/chat_friend_list/${relation.user}/${relation.friend}`).update({sendEmail: false}));
-      });
-      return modifySendEmail;
-    }).then(modifySendEmail => {
-      Promise.all(modifySendEmail).then(() => {
-        res.send('sendEmail modified');
-      });
+      })
+    }
+    return modifySendEmail;
+  }).then(modifySendEmail => {
+    Promise.all(modifySendEmail).then(() => {
+      res.send('sendEmail modified');
     });
-  }); 
+  });
 });
 
 exports.sendNewItemEmail = functions.database.ref('/items/{id}').onCreate(event => {
-  return getDataAndSendMail('Items', event).then(() => console.log('Function completed'));
+  return getDataAndSendMail('Items', event).then(body => {
+    console.log(body)
+  }).catch(err => {
+    console.log(err)
+  });
 });
 
 exports.sendNewEventEmail = functions.database.ref('/events/{id}').onCreate(event => {
-  return getDataAndSendMail('Events', event).then(() => console.log('Function completed'));
+  return getDataAndSendMail('Events', event).then(body => {
+    console.log(body)
+  }).catch(err => {
+    console.log(err)
+  });
 });
 
 exports.userProfileUpdated = functions.database.ref('/users/{id}').onUpdate(user => {
@@ -383,21 +396,21 @@ function getDataAndSendMail(whereFrom, createEvent) {
     return mappedUsers;
   }).then(mappedUsers => {
     const mailOptions = {
-      from: `${APP_NAME} <noreply@turazzunk.hu>`,
-      subject: `Új ${category} a ${APP_NAME}-on!`
+      subject: `Új ${category} a ${APP_NAME}-on!`,
+      html: `<h4>Szia %{nickTo}%!</h4> <p>Az oldalra új ${elementWhat} került fel a <strong>${category}</strong> kategóriába <strong>"${elementTitle}"</strong> néven. Nézd meg a részleteket itt:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="https://turazzunk.hu/${elementDir}/view/${elementId}">Tovább a(z) "${elementTitle}" részleteihez...</a><p>Üdv: ${APP_NAME}</p>`,
+      mailList: []
     }
-    
-    const emails = mappedUsers.map(user => {
-      mailOptions.to = user.userEmail;
-      mailOptions.html = `<h4>Szia ${user.userName || ''}!</h4> <p>Az oldalra új ${elementWhat} került fel a <strong>${category}</strong> kategóriába <strong>"${elementTitle}"</strong> néven. Nézd meg a részleteket itt:</p><a style="display: inline-block; padding: 10px 20px; background-color: rgb(19, 68, 204); margin: 20px 0; text-decoration: none; border-radius: 5px; color: white" href="https://turazzunk.hu/${elementDir}/view/${elementId}">Tovább a(z) "${elementTitle}" részleteihez...</a><p>${APP_NAME} mert túrázni jó!</p>`;
-      
-      return mailTransport.sendMail(mailOptions);
+    mappedUsers.map(user => {
+      mailOptions.mailList.push({mailTo: user.userEmail, nickTo: user.userName});
     });
     
-    return Promise.all(emails).then(
-      values => console.log(values),
-      reason => console.log(reason)
-    );
+    return request(
+      { method: 'POST', 
+        uri: "https://turazzunk.hu/sendMailFromCloud.php",
+        body: mailOptions, 
+        json: true
+      }
+    )
   });
 }
 
